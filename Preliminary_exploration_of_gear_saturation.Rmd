@@ -1,0 +1,385 @@
+---
+title: "DFO Survey Results"
+runtime: shiny
+output: 
+  flexdashboard::flex_dashboard:
+  orientation: rows
+vertical_layout: fill
+---
+  
+```{r setup, include=FALSE}
+require(flexdashboard)
+require(crosstalk)
+require(DT)
+require(tidyverse)
+require(shiny)
+require(tidyr)
+require(sf)
+require(gridExtra)
+require(ggridges)
+require(ROracle)
+require(dplyr)
+
+# Clean this up for the meeting with the group to highlight what biomass/volume seems to be
+# where we might be experiencing, show how frequently we experience this, highlighter
+# there could actually currently be an area that this could currently work, though there
+# has been some fishing here, so could be too late.  A pilot in the area may be worthwhile
+# 
+
+gba <- read.csv("Y:/Offshore/Assessment/Data/Survey_data/2019/Summer/GBa/Survey1984-2019.csv")
+gbb <- read.csv("Y:/Offshore/Assessment/Data/Survey_data/2019/Summer/GBb/Survey1984-2019.csv")
+bbn <- read.csv("Y:/Offshore/Assessment/Data/Survey_data/2019/Spring/BBn/Survey1991-2019.csv")
+source("Y:/Offshore/Assessment/Assessment_fns/Maps/pectinid_projector.R")
+source("Y:/Offshore/Assessment/Assessment_fns/Fishery/logs_and_fishery_data.r")
+source("Y:/Offshore/Assessment/Assessment_fns/Survey_and_OSAC/convert.dd.dddd.r")
+
+atow <- 1e6/(800*2.4384)/1000 # This get us tonnes/km^2 or 1000 scallops per km2
+tmp <- rbind(gba,gbb)
+tmp$bank <- "GB"
+bbn$bank <- "BBn"
+tmp1 <- rbind(tmp,bbn)
+
+tmp2 <- tmp1 %>% filter(state=='live')
+tmp2$rcs <- tmp2$com + tmp2$rec
+#$head(dat)
+
+# Now convert SH's to an approximate volume
+multiplier <- seq(.25,19.75,by=.5)^3
+volumes <- tmp2[,grep("^h",names(tmp2))] * multiplier
+
+names(volumes) <- paste0("v",substr(names(volumes),2,4))
+
+volumes$tot.vol <- rowSums(volumes)
+
+dat.w <- cbind(tmp2,volumes)
+dat.w$tot.vol <- dat.w$tot.vol/1e6
+# Get rid of the easy cols to get rid of...
+dat.w <- dat.w[,-grep("^h",names(dat.w))]
+dat.w <- dat.w[,-grep("^v",names(dat.w))]
+dat.w <- dat.w[,-grep("^bin",names(dat.w))]
+dat.w$com <- dat.w$com/100 # In hundreds of commerical,if area this would end up being 100,000/km^2
+dat.w$rec <- dat.w$rec/100# In hundreds of recruits,if area this would end up being 100,000/km^2
+dat.w$tot <- dat.w$tot/1000 # In thousands of total, if area this would end up being millions/km^2
+dat.w$tot.vol <- dat.w$tot.vol/10 # A meaningless volume unit...
+
+# Let's only look at data from 2000 onwards
+dat.w <- dat.w %>% filter(year >=2000)
+# Now grab the fishery data
+logs_and_fish(loc='offshore',year = 2000:2019,direct = "Y:/Offshore/Assessment/")
+all.log.dat <- merge(new.log.dat,old.log.dat,all=T)
+log.dat <- all.log.dat %>% dplyr::filter(bank %in% c("GBa","GBb","BBn"))  %>% dplyr::filter(kg.h<4000)
+log.dat <- st_as_sf(log.dat,coords = c('lon','lat'))
+st_crs(log.dat) <- 4326 # Assuming it's all WGS84...
+
+log.dat$bank[log.dat$bank %in% c("GBa","GBb")] <- "GB"
+
+
+# Now get the information on the baskets and summarize that, based on FK's script OFI_gear_saturation_baskets.R
+basketdat <- NULL
+# Get cruises and make it a simple vector in tidy language... Note the DB doesn't have all cruises before 1999 in there at this time (2020) so start with 2000...
+cruises <- as.character(dat.w %>% dplyr::filter(year > 1999) %>% dplyr::select(cruise) %>% dplyr::distinct() %>% pull())
+n.cruises <- length(cruises)
+
+# Run through a loop of all the cruises
+for(i in 1:n.cruises)
+{
+  cruise <- cruises[i]
+  print(cruise)
+  ### read in OSSURVEYS, OSTOWS and OSHFREQ_SAMPLES, you many not have permission to view some of these
+  # tables, so use the master username and password here.
+  chan <-dbConnect(dbDriver("Oracle"),username="scaloff", password="fgb256k",'ptran')
+  db <- "SCALOFF" ### CHANGE HUMF TO SCALOFF!!!
+  # Now the database queries.
+  qu.surveys <- paste0("select * from ", db, ".OSSURVEYS")
+  qu.surveys<- dbGetQuery(chan, qu.surveys)
+  # Get the correct location in the database
+  survey_seq <- paste(as.character(unique(qu.surveys[qu.surveys$CRUISE == cruise,]$SURVEY_SEQ)), sep="' '", collapse=", ")
+  # Get the necessary tows
+  qu.tows <- paste0("select * from ", db, ".OSTOWS WHERE SURVEY_SEQ in (", survey_seq, ")")
+  qu.tows<- dbGetQuery(chan, qu.tows)
+  # Now for the height frequency data
+  tow_seq <- paste(as.character(unique(qu.tows$TOW_SEQ)), sep="' '", collapse=", ")
+  qu.hfreq <- paste0("select * from ", db, ".OSHFREQSAMPLES WHERE TOW_SEQ in (", tow_seq, ")")
+  qu.hfreq<- dbGetQuery(chan, qu.hfreq)
+  hfreq_seq <- paste(as.character(unique(qu.hfreq$HFREQ_SAMPLE_SEQ)), sep="' '", collapse=", ")
+  qu.heightfreq <- paste0("select * from ", db, ".OSHEIGHTFREQ WHERE HFREQ_SAMPLE_SEQ in (", hfreq_seq, ")")
+  qu.heightfreq<- dbGetQuery(chan, qu.heightfreq)
+  dbDisconnect(chan)
+  # Stitch it together.
+  surv_tows <- left_join(qu.tows, qu.surveys, type="left", by="SURVEY_SEQ")
+  # surv_tows <- rbind(data.frame(surv_tows, LIVECODE="L"), data.frame(surv_tows, LIVECODE="D"))
+  surv_tows_samp <- left_join(surv_tows, qu.hfreq, type="left", by="TOW_SEQ")
+  surv_tows_samp_hf <- left_join(surv_tows_samp, qu.heightfreq, type="left", by="HFREQ_SAMPLE_SEQ")
+  # And here's your basket data, keep making this bigger at each loop.
+  basketdat <- rbind(basketdat, surv_tows_samp_hf)
+  
+}
+# change to lower case
+names(basketdat) <- tolower(names(basketdat))
+# Get year
+basketdat$year <- year(basketdat$start_date)
+# toss comment fields, there are multiple thus why ya need to do this seperately...
+basketdat <- basketdat[,which(!names(basketdat) %in% "comments")]
+# Get rid of other rows I don't need.
+basketdat <- select(basketdat, -tow_seq, -survey_seq, -bottom_temp, -hfreq_sample_seq, -height_freq_seq, -bin_id, -number_in_bin)
+#subset to GB and BBn.
+basketdat <- basketdat[basketdat$mgt_area_cd %in% c("GBa", "GBb","BBn"),]
+# Now  there is a crap load of duplicated data, toss it.
+basketdat <- unique(basketdat)
+# Make a month field
+basketdat$month <- month(basketdat$start_date)
+
+# Now get a tow by tow summary of the data
+basketdat_s <- basketdat %>%
+  filter(num_of_containers <99) %>%
+  filter(!is.na(livecode)) %>%
+  filter(livecode == "L") %>%
+  filter(container_type_id == 1) %>%
+  group_by(year, mgt_area_cd, tow_no, start_lon, start_lat, month) %>%
+  dplyr::summarise(baskets=sum(num_of_containers))
+
+basketdat_s$lon <- convert.dd.dddd(basketdat_s$start_lon)
+basketdat_s$lat <- convert.dd.dddd(basketdat_s$start_lat)
+
+# Now combine the baskets and the 
+names(basketdat_s) <- c("year", "bank", "tow", "start_lon", "start_lat", "month", "baskets", "s_lon", "s_lat")
+# I don't care if I'm on GBa or GBb, calling that GB...
+basketdat_s$bank[basketdat_s$bank %in% c("GBa","GBb","GB")] <- "GB"
+
+basket_cases <- left_join(dat.w,basketdat_s, by=c('year','bank','tow'))
+basket_cases <- basket_cases[!is.na(basket_cases$baskets),] # Toss data where I don't have basket information
+# Make data more tidyverse happy.
+dat.l <- pivot_longer(dat.w,cols = c("rec","com","tot","rec.bm","com.bm","tot.bm","tot.vol"),names_to = "size",values_to = "metric")
+
+# Now get the basket data in.
+basket_cases <- pivot_longer(basket_cases,cols = c("rec","com","tot","rec.bm","com.bm","tot.bm","tot.vol","baskets"),names_to = "size",values_to = "metric")
+
+
+# OK, ready to go, now let's turn these plots into a nice dashboard...
+```
+<!-- Page 1 -->
+<!-- =====================================   -->
+Column {.sidebar}
+-----------------------------------------------------------------------
+  
+### Data Selection
+  
+```{r}
+
+selectInput("Bank", "Bank",  c("GB","BBn"))
+#selectInput("year", "Year",  1999:2019)
+sliderInput("year", "Year",value = c(1999,2019),min=1999,max=2019)
+#textInput( "year", "Year",  1999:2019)
+selectInput("Size", "Size_class",  c("tot","com","rec"))
+selectInput("Data", "Survey_data",  c("Biomass","Abundance","Volume","Baskets"))
+#textInput(  0,placeholder = "A number to match scale of Survey_data input")
+sliderInput("cut_off", "Cut_off",value = c(1,180),min=0,max=180,step=5)
+#selectInput("cut_off", "Cut_off",seq(0,90,5))
+selectInput( "tow_units", "Tow_units",  c("tow","area"))
+
+```
+<!-- input <- data.frame(Bank = "GB",year = 2019,Size = 'tot',Data="Biomass",cut_off = 0,tow_units='tow') -->
+
+Column {data-height=600}
+-----------------------------------------------------------------------
+
+### Historical Survey information
+
+
+```{r,warning=F}
+
+renderPlot({
+if(input$Data == "Abundance")
+{ 
+  dat <- dat.l
+  sz <- input$Size 
+  brks <- c(0,1,5,50,100,500,1000,2000,3000,4000,5000)
+  x.lab <- expression(paste(frac(N,tow),bgroup("(","1000s",")")))
+  if(input$Size != 'tot') x.lab <- expression(paste(frac(N,km^2),bgroup("(","100s",")")))
+  if(input$tow_units == 'area') 
+  {
+   x.lab <- expression(paste(frac(N,km^2),bgroup("(","1e6",")"))) 
+   if(input$Size != 'tot') x.lab <- expression(paste(frac(N,km^2),bgroup("(","1e5",")")))
+  }
+}
+if(input$Data == "Biomass")
+{ 
+  dat <- dat.l
+  sz <- paste0(input$Size,".bm") 
+  brks <- c(0.1,1,2,5,10,20,50,75)
+  x.lab <- expression(paste(frac(kg,tow)))
+  if(input$tow_units == 'area') x.lab <- expression(paste(frac(t,km^2))) 
+}
+
+if(input$Data == "Volume")
+{ 
+  dat <- dat.l
+  sz <- 'tot.vol' 
+  brks <- c(0.1,1,2,5,10,20,50,75,100)
+  x.lab <- expression(paste(frac(Vol,tow),bgroup("(","Vol rescaled",")")))
+   if(input$Size != 'tot') x.lab <- expression(paste(frac(Vol,km^2),bgroup("(","Vol rescaled",")")))
+}
+
+if(input$Data == "Baskets")
+{ 
+  dat <- basket_cases
+  sz <- 'baskets'
+  brks <- c(0.1,1,2,5,10,20,30,40)
+  x.lab <- "Number of baskets"
+}  
+  
+  
+#if(input$Data == "Volume") print ("Note volume calculations are for total volume of catch and are not subet by size categories")
+
+dat.sub <- dat %>% filter(bank %in% input$Bank & size == sz)
+# Now change the units if necessary
+if(input$tow_units == "area" & input$Data != "Baskets") 
+{
+  dat.sub$metric <- dat.sub$metric / atow
+  brks <- 2* brks
+}
+# Now truncate the data appropriately based on our cut off...
+keep <- which(dat.sub$metric >= min(input$cut_off) & dat.sub$metric <= max(input$cut_off))
+dat.sub1 <- dat.sub[keep,]
+
+  
+p1 <- ggplot(dat.sub1) + geom_histogram(aes(metric)) + scale_x_log10(breaks = brks) + xlab(x.lab) + ylab("") + theme_classic() + ggtitle("Frequency of survey metric, All years of data")
+print(p1)
+
+# NOw by years if any data
+dat.years <- dat.sub1 %>% filter(year >= min(input$year) & year <= max(input$year))
+n.years.dat <- length(unique(dat.years$year))
+if(n.years.dat> 1) 
+{
+  if(min(input$cut_off) < 20) 
+  {
+   p2 <- ggplot(dat.years %>% filter(metric > 0),aes(x = metric, y = factor(year))) + geom_density_ridges2() + scale_x_log10(breaks = brks) + 
+     xlab(x.lab) + ylab("") + theme_classic() + ggtitle("Frequency of survey metric by year")
+  }
+ if(min(input$cut_off) >= 20) 
+  {
+   p2 <- ggplot(dat.years) + geom_histogram(aes(metric)) + scale_x_log10(breaks = brks) + xlab(x.lab) +     
+      ylab("") + theme_classic() + facet_wrap(~year) + ggtitle("Frequency of survey metric by year")
+  }
+}
+
+if(n.years.dat == 1) 
+{
+  p2 <- ggplot(dat.years) + geom_histogram(aes(metric)) + scale_x_log10(breaks = brks) + xlab(x.lab) +     
+      ylab("") + theme_classic() + ggtitle(paste("Frequency of survey metric",input$year))
+}
+
+if(n.years.dat == 0) print(p1)
+if(n.years.dat > 0) grid.arrange(p1,p2)
+})
+
+```
+
+<!-- Page 2 -->
+<!-- =====================================   -->
+Column {.tabset,data-height=600}
+-----------------------------------------------------------------------
+
+### Spatial Fishery Figures
+
+
+```{r,warning=F}
+renderPlot({
+if(input$Data == "Abundance"){ sz <- input$Size ; brks <- c(0,1,5,50,100,500,1000,2000,3000,4000,5000);dat=dat.l}
+if(input$Data == "Biomass"){ sz <- paste0(input$Size,".bm"); brks <- c(0.1,1,2,5,10,20,50,75,100);dat=dat.l}
+if(input$Data == "Volume"){ sz <- 'tot.vol'; brks <- c(0.1,1,2,5,10,20,50,75,100);dat=dat.l}
+if(input$Data == "Volume") print ("Note volume calculations are for total volume of catch and are not subet by size categories")
+  
+  if(input$Data == "Baskets")
+{ 
+  dat <- basket_cases
+  sz <- 'baskets'
+  brks <- c(0.1,1,2,5,10,20,30,40)
+  x.lab <- "Number of baskets"
+}  
+
+dat.tst <- dat %>% filter(bank %in% input$Bank & size == sz)
+# Now change the units if necessary
+if(input$tow_units == "area") 
+{
+  dat.tst$metric <- dat.tst$metric / atow
+  brks <- 2* brks
+}
+# Now truncate the data appropriately based on our cut off...
+keep <- which(dat.tst$metric >= min(input$cut_off) & dat.tst$metric <= max(input$cut_off))
+dat.sub2 <- dat.tst[keep,]
+
+
+dat.over <- dat.sub2 %>% filter(bank %in% input$Bank & year >= min(input$year) & year <= max(input$year))
+dat.over <- na.omit(dat.over)
+dat.over <- st_as_sf(dat.over,coords = c('slon','slat'))
+st_crs(dat.over) <- 4326 # Assuming it's all WGS84...
+
+
+
+# And the log data for teh spatial plot
+plt.dat <- log.dat
+plt.dat <- plt.dat %>% filter(bank %in% input$Bank& year >= min(input$year) & year <= max(input$year))
+
+p4<- ggplot(plt.dat) + geom_sf(aes(fill = kg.h,colour=kg.h)) + theme_classic() +
+        scale_fill_viridis_c(direction=-1)+ scale_colour_viridis_c(direction=-1) + 
+        geom_sf(data=dat.over) + ggtitle(paste0("Fishery Catch Rate ",min(input$year),'-',max(input$year)))
+  print(p4)
+
+})
+
+```
+
+
+<!-- #  -->
+<!-- # windows(11,11) -->
+<!-- # ggplot(dat) + geom_point(aes(x = year, y=com)) -->
+<!-- # ggplot(dat) + geom_point(aes(x = year, y=pre)) -->
+<!-- # ggplot(dat) + geom_point(aes(x = year, y=rec)) -->
+<!-- #  -->
+<!-- # # Abundances -->
+<!-- # ggplot(dat) + geom_histogram(aes(com),bins=50) -->
+<!-- # ggplot(dat) + geom_histogram(aes(pre),bins=50) -->
+<!-- # ggplot(dat) + geom_histogram(aes(rec),bins=50) + scale_x_log10() -->
+<!-- # ggplot(dat) + geom_histogram(aes(tot),bins=50) + scale_x_log10() -->
+<!-- # ggplot(dat) + geom_histogram(aes(rcs),bins=50) + scale_x_log10() -->
+<!-- #  -->
+<!-- # #Biomasses -->
+<!-- #  -->
+<!-- # ggplot(dat) + geom_histogram(aes(com.bm),bins=50)+ scale_x_log10(breaks = c(0.1,1,2,5,10,20,50,75,100)) -->
+<!-- # ggplot(dat) + geom_histogram(aes(tot.bm),bins=50)+ scale_x_log10(breaks = c(0.1,1,2,5,10,20,50,75,100)) -->
+<!-- #  -->
+<!-- # ggplot(dat %>% filter(year > 2000)) + geom_histogram(aes(tot.bm),bins=20)+  -->
+<!-- #   scale_x_log10(breaks = c(2,5,10,20,50,75,90,100),limits = c(5,100)) +  -->
+<!-- #               facet_wrap(~year) + geom_vline(xintercept=75,size=1,colour='blue',alpha=0.2) -->
+<!-- #  -->
+<!-- #  -->
+<!-- #  -->
+<!-- # # Don't see much past 5 m^3 let's use those volumes -->
+<!-- # ggplot(dat) + geom_histogram(aes(tot.vol),bins=500) + scale_x_log10(breaks= c(0.1,1,2,5)) -->
+<!-- # ggplot(dat) + geom_point(aes(tot.bm,tot.vol)) -->
+<!-- #  -->
+<!-- # high <- dat %>% filter(tot.vol > 5) -->
+<!-- # high <- dat %>% filter(tot.bm >= 50) -->
+<!-- #  -->
+<!-- #  -->
+<!-- # tst <- st_as_sf(high,coords = c("lon","lat")) -->
+<!-- #  -->
+<!-- #  -->
+<!-- # tst <- tst %>% filter(year >= 2018) -->
+<!-- #  -->
+<!-- # ggplot(tst %>% filter(year > 2015)) +  geom_sf_text(aes(label=substr(year,3,4)),size=4) -->
+<!-- #  -->
+<!-- # pecjector(area= "GB",plot_package="base",add_EEZ=T,add_nafo='sub',add_strata = T) -->
+<!-- # points(tst$slon,tst$slat,pch=19) -->
+<!-- #  -->
+<!-- #  -->
+
+<!-- # ggplot(gb.log.dat) + geom_sf(aes(fill = kg.h,colour=kg.h)) + -->
+<!-- #       scale_fill_viridis_c(direction=-1)+ scale_colour_viridis_c(direction=-1) + -->
+<!-- #         geom_sf(data=tst) -->
+<!-- #  -->
+<!-- # ggplot(gb.log.dat) + geom_histogram(aes(kg.h)) + scale_x_log10() -->
+<!-- #  -->
+<!-- #  -->
+<!-- # ``` -->
