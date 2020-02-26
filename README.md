@@ -22,7 +22,9 @@ The workflow is as follows
 
 6: Create a PULL REQUEST to merge the data into your FORK.
 
-Within your fork you can take care of your own pull requests. 7: Test your changes to ensure there are no bugs within your FORK
+Within your fork you can take care of your own pull requests. 
+
+7: Test your changes to ensure there are no bugs within your FORK
 
 8: You can now submit a PULL REQUEST from your FORK to the Mar-scal MASTER
 
