@@ -10,12 +10,15 @@ The workflow is as follows
 1: New users should be added as collaborators (talk to Dave or Freya)
 
 2: FORK the Mar-scal MASTER to your personal github account
+  - This is your personal DEVELOPMENT version of the MASTER repo housed in Mar-scal. 
 
-This is your personal DEVELOPMENT version of the MASTER repo housed in Mar-scal. 3: On your computer you will clone your FORK repo to Y:\Github\OFI\scripts\YOUR_NAME.
-
-This directory is where you will work on revisions. WE NEVER WORK in the directory where the MASTER resides (i.e. Y:\Projects\OFI\scripts) 4: All independent work is to be performed on a branch inside your personal FORK that resides in Y:\Github....
-
-Please name you branch something informative, e.g. Mapping update, survey bugfix, etc. 5: When you have completed your revisions COMMIT the revisions to your branch
+3: On your computer you will clone your FORK repo to Y:\Github\OFI\scripts\YOUR_NAME.
+  - This directory is where you will work on revisions. WE NEVER WORK in the directory where the MASTER resides (i.e. Y:\Projects\OFI\scripts) 
+  
+ 4: All independent work is to be performed on a branch inside your personal FORK that resides in Y:\Github....
+  - Please name you branch something informative, e.g. Mapping update, survey bugfix, etc. 
+  
+5: When you have completed your revisions COMMIT the revisions to your branch
 
 6: Create a PULL REQUEST to merge the data into your FORK.
 
